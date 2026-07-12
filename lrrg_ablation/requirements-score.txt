@@ -1,0 +1,6 @@
+# Stage B: scoring  (SEPARATE venv, e.g. venv_score)
+numpy
+nltk
+rouge-score
+f1chexbert            # downloads the CheXbert checkpoint on first run
+# radgraph            # optional RadGraph-F1 (per-case, gets bootstrap CIs); uncomment to enable

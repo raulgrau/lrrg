@@ -1,0 +1,14 @@
+torch
+torchvision
+transformers
+peft
+bitsandbytes
+accelerate
+numpy
+pandas
+Pillow
+nltk
+rouge_score
+pycocoevalcap
+radgraph
+f1chexbert

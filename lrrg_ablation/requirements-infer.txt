@@ -1,0 +1,12 @@
+# Stage A: curation + MAIRA-2 inference  (one venv, e.g. venv_infer)
+# Install torch first, matching the box's CUDA, e.g.:
+#   pip install torch --index-url https://download.pytorch.org/whl/cu121
+torch
+transformers==4.51.3      # MAIRA-2 requires >=4.48,<4.52 (tested 4.51.3)
+accelerate
+huggingface_hub
+pillow
+sentencepiece
+protobuf
+pandas
+requests
