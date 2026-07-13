@@ -30,7 +30,7 @@ ETA is reported every 25 cases.
 Usage:
     export XDG_CACHE_HOME=/var/tmp/xdg_cache_grauperez
     unset LD_LIBRARY_PATH
-    python run_icl_pipeline.py --limit 20            # smoke test, both stages
+    python run_icl_pipeline.py --limit 20 --shuffle  # smoke test, both stages, mixed change/no-change
     python run_icl_pipeline.py --stage draft         # just draft everything
     python run_icl_pipeline.py --stage revise        # then retrieve+revise+guardrail
     python run_icl_pipeline.py                       # full run, both stages back to back
@@ -80,7 +80,7 @@ def append_jsonl(path: Path, record: dict):
         f.flush()
 
 
-def get_valid_cases(limit=None):
+def get_valid_cases(limit=None, shuffle=False, seed=0):
     all_cases = load_manifest(PATHS.test_manifest)
     # Valid population per memory: prior-conditioned arm requires both a
     # prior image and a prior report.
@@ -89,9 +89,23 @@ def get_valid_cases(limit=None):
         if c.get("prior_image") and c.get("prior_findings") and c.get("current_image") and c.get("reference_findings")
     ]
     print(f"{len(cases)}/{len(all_cases)} test cases have both prior image + prior report (valid population)")
+    if shuffle:
+        # test_pairs_ulcx.jsonl is grouped by subject (consecutive pairs from
+        # the same patient), so taking a plain prefix with --limit can
+        # accidentally land on all-change or all-no-change cases (seen on a
+        # real run: the first 20 rows were all change=True). Shuffle with a
+        # fixed seed before slicing so --limit gives a representative mix,
+        # while staying reproducible across runs.
+        import random
+
+        rng = random.Random(seed)
+        cases = list(cases)
+        rng.shuffle(cases)
+        print(f"--shuffle set: cases randomized (seed={seed}) before applying --limit")
     if limit:
         cases = cases[:limit]
-        print(f"--limit set: running on first {len(cases)} cases")
+        suffix = "(random subset)" if shuffle else "(first N in manifest order)"
+        print(f"--limit set: running on {len(cases)} cases {suffix}")
     return cases
 
 
@@ -155,7 +169,10 @@ def run_revise_stage(cases, device: str):
     draft_cache = load_jsonl_index(PATHS.draft_cache_file, key="study_id")
     final_cache = load_jsonl_index(PATHS.final_output_file, key="study_id")
 
-    missing_drafts = [c for c in cases if c["current_study_id"] not in draft_cache and c["current_study_id"] not in final_cache]
+    missing_drafts = [
+        c for c in cases
+        if c["current_study_id"] not in draft_cache and c["current_study_id"] not in final_cache
+    ]
     if missing_drafts:
         print(
             f"[revise] WARNING: {len(missing_drafts)} cases have no cached draft and aren't in "
@@ -279,6 +296,13 @@ def main():
     parser.add_argument("--limit", type=int, default=None, help="cap number of cases, for smoke testing")
     parser.add_argument("--device", default="cuda")
     parser.add_argument(
+        "--shuffle", action="store_true",
+        help="randomize case order (fixed seed, reproducible) before applying --limit, so a "
+             "small --limit sample isn't accidentally all-change or all-no-change (the manifest "
+             "is grouped by subject).",
+    )
+    parser.add_argument("--seed", type=int, default=0, help="shuffle seed, only used with --shuffle")
+    parser.add_argument(
         "--stage", choices=["draft", "revise", "all"], default="all",
         help="run just the MAIRA-2 drafting stage, just the retrieve/revise/guardrail "
              "stage (requires drafts already cached), or both back to back (default). "
@@ -287,7 +311,7 @@ def main():
     args = parser.parse_args()
 
     print("loading test manifest...")
-    cases = get_valid_cases(limit=args.limit)
+    cases = get_valid_cases(limit=args.limit, shuffle=args.shuffle, seed=args.seed)
 
     if args.stage in ("draft", "all"):
         run_draft_stage(cases, device=args.device)
