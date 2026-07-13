@@ -254,16 +254,6 @@ def main():
                           f"{rate:.2f} samp/s", flush=True)
                     running, t0 = 0.0, time.time()
 
-            if args.profile and prof_n >= args.profile_steps:
-                total = sum(prof.values()) or 1e-9
-                print(f"  [profile] over {prof_n} micro-steps (s/sample, % of total):")
-                for k, v in prof.items():
-                    print(f"    {k:6s} {v/prof_n:.3f}s/samp  ({100*v/total:.1f}%)")
-                prof = {k: 0.0 for k in prof}
-                prof_n = 0
-
-            data_t0 = time.time()
-
                 if opt_step % args.save_every == 0:
                     save_checkpoint(bundle, optim, sched, opt_step, args.out_dir,
                                     meta={"injection": args.injection,
@@ -276,6 +266,16 @@ def main():
                                     meta={"injection": args.injection, "final": True})
                     print("[done] hit max_steps")
                     return
+
+            if args.profile and prof_n >= args.profile_steps:
+                total = sum(prof.values()) or 1e-9
+                print(f"  [profile] over {prof_n} micro-steps (s/sample, % of total):")
+                for k, v in prof.items():
+                    print(f"    {k:6s} {v/prof_n:.3f}s/samp  ({100*v/total:.1f}%)")
+                prof = {k: 0.0 for k in prof}
+                prof_n = 0
+
+            data_t0 = time.time()
 
     save_checkpoint(bundle, optim, sched, opt_step, args.out_dir,
                     meta={"injection": args.injection, "final": True})
