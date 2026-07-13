@@ -308,6 +308,15 @@ def build_model(
     # ---- QLoRA: 4-bit base + LoRA on Vicuna q/v ----
     if load_in_4bit:
         model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=True)
+        # prepare_model_for_kbit_training walks ALL of model.parameters() and
+        # upcasts any bf16/fp16 param back to fp32 (standard peft behavior for
+        # training stability). vision_tower is a SHARED object between `model`
+        # and injected.embeddings/injected.layers/injected.layernorm, so this
+        # silently reverts the bf16 cast at line ~292. injected.blocks (DFAM/DDAM)
+        # live outside model's parameter tree and are untouched, so they stay
+        # bf16 -- causing "Input type float and bias type BFloat16" the moment
+        # fp32 patches hit a bf16 DDaTR block. Re-cast the vision tower now.
+        injected.to(dtype=torch.bfloat16)
     lora_cfg = LoraConfig(
         r=lora_r, lora_alpha=lora_alpha, lora_dropout=lora_dropout,
         target_modules=["q_proj", "v_proj"], bias="none", task_type="CAUSAL_LM",
@@ -322,6 +331,9 @@ def build_model(
         raise AttributeError(attr)
 
     projector = _find(model, spec.projector_attr)
+    # same reason as the injected.to() call above: prepare_model_for_kbit_training
+    # already reverted this module to fp32 before we re-fetched it here.
+    projector.to(dtype=torch.bfloat16)
 
     # mark our trainable params: DDaTR blocks, text projection, (optionally) projector
     for p in injected.blocks.parameters():
