@@ -85,6 +85,23 @@ python run_icl_pipeline.py --limit 20   # smoke test first
 python run_icl_pipeline.py              # full run (1,786 pairs, subset to valid prior-conditioned population)
 ```
 
+**GPU memory note (confirmed by OOM on a real run):** MAIRA-2 (RAD-DINO +
+Vicuna-7B) and Qwen2.5-7B-Instruct are each ~7B params, ~15GB in bf16 --
+together they don't fit on a single 24GB RTX 3090. `run_icl_pipeline.py`
+handles this as two stages that are never GPU-resident together:
+
+```bash
+python run_icl_pipeline.py --stage draft    # loads ONLY MAIRA-2, drafts everything, exits
+python run_icl_pipeline.py --stage revise   # loads CheXbert + Qwen (not MAIRA-2), does the rest
+```
+
+`--stage all` (the default, what the commands above run) does both in one
+process, explicitly freeing MAIRA-2 from GPU memory (`del` + `gc.collect()` +
+`torch.cuda.empty_cache()`) before loading Qwen -- safe on one GPU, just pays
+the two stages' wall-clock time sequentially rather than overlapping them.
+Splitting into two separate invocations is useful if you want to kill the
+session between stages, or run them on different machines/queue slots.
+
 Outputs go to `config.PATHS.draft_cache_file` (MAIRA-2 drafts, cached
 separately so a slow drafting stage isn't repeated) and
 `config.PATHS.final_output_file` (per-case draft/revised/final text, accept
