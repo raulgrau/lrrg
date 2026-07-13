@@ -165,7 +165,14 @@ def main():
                             text_tokenizer=bundle.text_encoder.tokenizer,
                             is_train=True, max_target_len=args.max_target_len,
                             pixel_dtype=torch.bfloat16)
-    loader = DataLoader(ds, batch_size=1, shuffle=True, num_workers=4,
+    # num_workers=0: model load (a few lines up) already initialized a CUDA
+    # context in this process. On Linux, DataLoader workers default to `fork`,
+    # and forking a process that already holds a CUDA context is a classic
+    # silent-deadlock trigger -- no error, no crash, workers just never come up
+    # and the loop hangs forever on the first batch. Single-process loading is
+    # safe here: batch_size=1, and the GPU-bound QLoRA forward/backward through
+    # a 7B model dominates wall time anyway, so there's no real throughput cost.
+    loader = DataLoader(ds, batch_size=1, shuffle=True, num_workers=0,
                         collate_fn=collate, pin_memory=False)
 
     trainable = list(_trainable_named_params(bundle).values())

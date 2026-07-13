@@ -1,0 +1,7 @@
+# Base ML stack (transformers, torch, accelerate, peft, numpy, pandas, Pillow)
+# is already in ~/lrrg/requirements.txt, including f1chexbert -- install that
+# first: `pip install -r ../requirements.txt` from this directory. Only the
+# additions this pipeline needs beyond that are listed here.
+faiss-cpu>=1.7.4          # swap for faiss-gpu if the pool machine has a working CUDA faiss build
+pyarrow>=15.0             # parquet I/O for the corpus file
+tqdm>=4.66
