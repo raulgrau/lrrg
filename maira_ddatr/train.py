@@ -138,6 +138,11 @@ def main():
                     help="train only on pairs that have a prior (sharpens the signal)")
     ap.add_argument("--resume", default="", help="path to ckpt.pt to continue from")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--profile", action="store_true",
+                    help="time data-load/forward/backward/optim separately (adds "
+                         "cuda.synchronize() calls -- diagnostic only, some overhead)")
+    ap.add_argument("--profile_steps", type=int, default=40,
+                    help="micro-steps to profile before printing and clearing (with --profile)")
     args = ap.parse_args()
 
     import torch
@@ -198,18 +203,47 @@ def main():
     optim.zero_grad(set_to_none=True)
     t0 = time.time()
 
+    # --profile: attribute wall time to data-load / forward / backward / optim
+    # separately. cuda.synchronize() makes each bucket honest (CUDA calls are
+    # async otherwise -- without sync, time just piles up wherever you next
+    # block, which is exactly the kind of misleading number that led to
+    # optimizing the wrong end last time.
+    prof = {"data": 0.0, "fwd": 0.0, "bwd": 0.0, "optim": 0.0}
+    prof_n = 0
+    data_t0 = time.time()
+
     for epoch in range(args.epochs):
         for sample in loader:
-            loss = ddatr_step(bundle, sample, device=device)
-            (loss / args.grad_accum).backward()
+            if args.profile:
+                torch.cuda.synchronize()
+                prof["data"] += time.time() - data_t0
+
+                t = time.time()
+                loss = ddatr_step(bundle, sample, device=device)
+                torch.cuda.synchronize()
+                prof["fwd"] += time.time() - t
+
+                t = time.time()
+                (loss / args.grad_accum).backward()
+                torch.cuda.synchronize()
+                prof["bwd"] += time.time() - t
+            else:
+                loss = ddatr_step(bundle, sample, device=device)
+                (loss / args.grad_accum).backward()
             running += loss.item()
             micro += 1
+            prof_n += 1
 
             if micro % args.grad_accum == 0:
+                if args.profile:
+                    t = time.time()
                 torch.nn.utils.clip_grad_norm_(trainable, args.grad_clip)
                 optim.step()
                 sched.step()
                 optim.zero_grad(set_to_none=True)
+                if args.profile:
+                    torch.cuda.synchronize()
+                    prof["optim"] += time.time() - t
                 opt_step += 1
 
                 if opt_step % args.log_every == 0:
@@ -219,6 +253,16 @@ def main():
                           f"loss {avg:.4f} lr {sched.get_last_lr()[0]:.2e} "
                           f"{rate:.2f} samp/s", flush=True)
                     running, t0 = 0.0, time.time()
+
+            if args.profile and prof_n >= args.profile_steps:
+                total = sum(prof.values()) or 1e-9
+                print(f"  [profile] over {prof_n} micro-steps (s/sample, % of total):")
+                for k, v in prof.items():
+                    print(f"    {k:6s} {v/prof_n:.3f}s/samp  ({100*v/total:.1f}%)")
+                prof = {k: 0.0 for k in prof}
+                prof_n = 0
+
+            data_t0 = time.time()
 
                 if opt_step % args.save_every == 0:
                     save_checkpoint(bundle, optim, sched, opt_step, args.out_dir,
