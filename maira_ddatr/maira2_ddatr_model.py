@@ -60,10 +60,10 @@ class MAIRA2Spec:
     vt_embeddings_attr: str = "embeddings"
     vt_layers_path: tuple[str, str] = ("encoder", "layer")
     vt_layernorm_attr: str = "layernorm"
-    # UNCONFIRMED: probe section [2] failed on 'BackboneOutput' has no
-    # last_hidden_state before it could report real grid/prefix/hidden_dim.
-    # config.image_seq_length = 576 (=24*24) conflicts with the 37x37 (1369)
-    # assumption below -- do not trust these three until re-probed.
+    # confirmed via probe_processor.py on the cluster (2026-07-13): real
+    # vision-tower forward reports last_hidden tokens=1370 -> grid 37x37,
+    # num_prefix_tokens=1, hidden_dim=768. (config.image_seq_length=576 is a
+    # separate LLaVA-side field, unrelated to the raw ViT token grid -- ignore it.)
     num_prefix_tokens: int = 1                     # CLS only -> 1+37*37 = 1370
     grid_hw: tuple[int, int] = (37, 37)
     hidden_dim: int = 768
@@ -75,9 +75,11 @@ class MAIRA2Spec:
     vision_feature_select_strategy: str = "default"  # drops CLS/prefix tokens
 
     # -- processor image-block layout (only needed for strip mode) ---------
-    # order of image blocks as they appear in the prompt token sequence
-    # UNCONFIRMED: probe section [4] failed -- format_and_preprocess_reporting_input
-    # now requires current_frontal/current_lateral args. Re-probe before trusting.
+    # order of image blocks as they appear in the prompt token sequence.
+    # confirmed via probe_processor.py (2026-07-13): 2 image spans of 1369
+    # tokens each, current-frontal span starts before prior-frontal span in
+    # the real prompt -- matches this order. (pixel_values stack order is
+    # assumed to match token order; not independently verified pixel-by-pixel.)
     image_block_order: tuple[str, ...] = ("current_frontal", "prior_frontal")
 
     # -- modules to keep in bf16 (NOT 4-bit quantized) ---------------------
