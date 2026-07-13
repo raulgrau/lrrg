@@ -176,6 +176,7 @@ class DDaTRVisionMerger(nn.Module):
         self.spec = spec
         self.num_layers = injected.num_layers
 
+    @torch.no_grad()
     def _vanilla_hidden(self, pixels):
         # Route through the injected module with has_prior=0 -> an exact vanilla
         # RAD-DINO forward (DDaTR residuals gated off). This (a) avoids MAIRA-2's
@@ -184,6 +185,14 @@ class DDaTRVisionMerger(nn.Module):
         # IDENTICAL hidden-state construction to the current frontal, so their
         # projected features can't land on a different scale. None-safe: with
         # has_prior=0 the injected forward never dereferences prior_pixels/txt.
+        #
+        # @torch.no_grad(): has_prior=0 means the DDaTR residual is provably zero
+        # (see raddino_injection.py's self-test), so this path only ever feeds the
+        # trainable projector as a VALUE -- no gradient needs to reach back through
+        # it. Without this, every call still ran the full DFAM/DDAM forward (conv
+        # branches, attention, gating) just to multiply the result by zero and
+        # build a backward graph nothing uses. Called at least once per training
+        # step (prior_frontal in keep_as_tokens mode), more with extra_vanilla_blocks.
         B = pixels.shape[0]
         zeros = torch.zeros(B, device=pixels.device, dtype=pixels.dtype)
         return self.injected(pixels, None, None, None, zeros)
@@ -256,13 +265,24 @@ def build_model(
             llm_int8_skip_modules=list(spec.quant_skip_modules),
         )
 
-    model = AutoModelForCausalLM.from_pretrained(
-        spec.model_id,
+    # sdpa attention is meaningfully faster than eager for the 7B Vicuna decoder,
+    # especially combined with gradient checkpointing. Not all trust_remote_code
+    # models wire this kwarg through cleanly -- fall back to eager (the previous
+    # default) if MAIRA-2's custom modeling code rejects it, rather than hard
+    # failing model load.
+    _from_pretrained_kwargs = dict(
         trust_remote_code=True,
         quantization_config=quant,
         torch_dtype=torch.bfloat16,
         device_map={"": device} if load_in_4bit else None,
     )
+    try:
+        model = AutoModelForCausalLM.from_pretrained(
+            spec.model_id, attn_implementation="sdpa", **_from_pretrained_kwargs)
+    except (TypeError, ValueError) as e:
+        print(f"[build_model] attn_implementation='sdpa' rejected ({e}); "
+              f"falling back to eager attention.")
+        model = AutoModelForCausalLM.from_pretrained(spec.model_id, **_from_pretrained_kwargs)
 
     # discover submodules
     def _resolve(root, dotted):

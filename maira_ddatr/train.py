@@ -173,7 +173,7 @@ def main():
     # safe here: batch_size=1, and the GPU-bound QLoRA forward/backward through
     # a 7B model dominates wall time anyway, so there's no real throughput cost.
     loader = DataLoader(ds, batch_size=1, shuffle=True, num_workers=0,
-                        collate_fn=collate, pin_memory=False)
+                        collate_fn=collate, pin_memory=True)
 
     trainable = list(_trainable_named_params(bundle).values())
     optim = torch.optim.AdamW(trainable, lr=args.lr, weight_decay=args.weight_decay)

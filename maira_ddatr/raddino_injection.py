@@ -108,6 +108,12 @@ class InjectedRadDino(nn.Module):
             {str(i): DDaTRBlock(hidden_dim, txt_dim, num_heads, norm)
              for i in self.injection_indices}
         )
+        # Nothing trainable lives before the shallowest injection point (the ViT
+        # itself is frozen), so no backward graph is needed there -- gradients
+        # only need to reach as far back as this depth. For M1 (injection at the
+        # final block only) this skips backprop bookkeeping for 11 of 12 blocks,
+        # in BOTH the prior and current passes. See _encode_prior/_encode_current.
+        self.first_injection = min(self.injection_indices)
 
     # ----- internal: run one block (handles tuple/tensor return) ----------- #
     @staticmethod
@@ -125,9 +131,15 @@ class InjectedRadDino(nn.Module):
             f"token count {hidden.shape[1]} != prefix {self.P} + patches {self.N}; "
             "check num_prefix_tokens / grid_hw against your RAD-DINO build"
         )
+        # Blocks before the shallowest injection are frozen with nothing
+        # downstream needing their activation-gradients -- run them with no
+        # autograd graph at all. Values are identical either way.
+        with torch.no_grad():
+            for i in range(self.first_injection):
+                hidden = self._run_layer(self.layers[i], hidden)
         cache: dict[int, torch.Tensor] = {}
-        for i, layer in enumerate(self.layers):
-            hidden = self._run_layer(layer, hidden)
+        for i in range(self.first_injection, self.num_layers):
+            hidden = self._run_layer(self.layers[i], hidden)
             if i in self.injection_indices:
                 prefix, patches = self._split(hidden)
                 patches = self.blocks[str(i)].align_prior(patches, txt, txt_mask, has_prior)
@@ -139,8 +151,12 @@ class InjectedRadDino(nn.Module):
     def _encode_current(self, cur_pixels, prior_cache, has_prior):
         hidden = self.embeddings(cur_pixels)
         all_hidden = [hidden]
-        for i, layer in enumerate(self.layers):
-            hidden = self._run_layer(layer, hidden)
+        with torch.no_grad():
+            for i in range(self.first_injection):
+                hidden = self._run_layer(self.layers[i], hidden)
+                all_hidden.append(hidden)
+        for i in range(self.first_injection, self.num_layers):
+            hidden = self._run_layer(self.layers[i], hidden)
             if i in self.injection_indices:
                 prefix, patches = self._split(hidden)
                 prior_patches = prior_cache[i]
