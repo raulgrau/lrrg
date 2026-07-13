@@ -247,6 +247,8 @@ def build_model(
     load_in_4bit: bool = True,
     device: str = "cuda",
     spec: MAIRA2Spec = SPEC,
+    use_gradient_checkpointing: bool = True,
+    grad_checkpointing_reentrant: bool = False,
 ) -> DDaTRBundle:
     import torch
     from transformers import AutoModelForCausalLM, AutoProcessor, BitsAndBytesConfig
@@ -327,7 +329,25 @@ def build_model(
 
     # ---- QLoRA: 4-bit base + LoRA on Vicuna q/v ----
     if load_in_4bit:
-        model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=True)
+        # Profiling on cgpool (2026-07): backward is 66% of step time vs 27%
+        # forward -- a ~2.5x bwd/fwd ratio, higher than the ~2x you'd expect
+        # without checkpointing. That gap is checkpoint recomputation (part of
+        # the forward re-runs during backward to avoid storing activations).
+        # use_reentrant=False (PyTorch's newer checkpoint impl) is usually
+        # cheaper than the legacy reentrant default HF/peft still falls back
+        # to if you don't ask -- try this first. If VRAM allows, try
+        # use_gradient_checkpointing=False entirely (biggest win, but may OOM
+        # at batch=1 on a 24GB 3090; more likely to fit on bigger compute).
+        ckpt_kwargs = dict(use_gradient_checkpointing=use_gradient_checkpointing)
+        if use_gradient_checkpointing:
+            ckpt_kwargs["gradient_checkpointing_kwargs"] = {
+                "use_reentrant": grad_checkpointing_reentrant}
+        try:
+            model = prepare_model_for_kbit_training(model, **ckpt_kwargs)
+        except TypeError:
+            # older peft: no gradient_checkpointing_kwargs passthrough
+            model = prepare_model_for_kbit_training(
+                model, use_gradient_checkpointing=use_gradient_checkpointing)
         # prepare_model_for_kbit_training walks ALL of model.parameters() and
         # upcasts any bf16/fp16 param back to fp32 (standard peft behavior for
         # training stability). vision_tower is a SHARED object between `model`

@@ -143,6 +143,12 @@ def main():
                          "cuda.synchronize() calls -- diagnostic only, some overhead)")
     ap.add_argument("--profile_steps", type=int, default=40,
                     help="micro-steps to profile before printing and clearing (with --profile)")
+    ap.add_argument("--no_grad_checkpointing", action="store_true",
+                    help="disable gradient checkpointing entirely (faster, more VRAM; "
+                         "test this first with --profile to see if it OOMs on your GPU)")
+    ap.add_argument("--grad_checkpointing_reentrant", action="store_true",
+                    help="use the legacy reentrant checkpoint impl instead of the newer, "
+                         "usually-cheaper use_reentrant=False (default off)")
     args = ap.parse_args()
 
     import torch
@@ -162,6 +168,8 @@ def main():
         text_encoder_name=args.text_encoder,
         lora_r=args.lora_r,
         device=device,
+        use_gradient_checkpointing=not args.no_grad_checkpointing,
+        grad_checkpointing_reentrant=args.grad_checkpointing_reentrant,
     )
 
     ds = LongitudinalPairDataset(args.train_manifest, image_root=args.image_root,
