@@ -1,0 +1,81 @@
+<svg width="680" height="500" viewBox="0 0 680 500" xmlns="http://www.w3.org/2000/svg" role="img">
+<title>ICL retrieve-then-revise pipeline component diagram</title>
+<desc>Horizontal flow: a shared keyword classifier feeds both the offline corpus build and the online revise step; MAIRA-2 draft, retrieve exemplars from the corpus, Qwen revises comparison sentences, CheXbert guardrail accepts or reverts to the draft.</desc>
+<defs>
+<marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="#5F5E5A" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker>
+</defs>
+<rect x="0" y="0" width="680" height="500" fill="#FFFFFF"/>
+
+<!-- shared keyword classifier -->
+<g>
+  <rect x="250" y="18" width="180" height="56" rx="8" fill="#FBEFE2" stroke="#A5680E" stroke-width="0.5"/>
+  <text x="340" y="36" text-anchor="middle" dominant-baseline="central" font-family="Arial, sans-serif" font-size="14" font-weight="500" fill="#4A2E05">Keyword classifier</text>
+  <text x="340" y="54" text-anchor="middle" dominant-baseline="central" font-family="Arial, sans-serif" font-size="12" fill="#7A4B0C">comparison/temporal cues</text>
+</g>
+
+<!-- classifier -> corpus (offline use: flags sentences to build the corpus from) -->
+<line x1="300" y1="74" x2="255" y2="130" stroke="#A5680E" stroke-width="1" marker-end="url(#arrow)"/>
+<!-- classifier -> revise (online use: flags which draft sentences to rewrite) -->
+<path d="M400,74 C 590,105 590,210 407,250" fill="none" stroke="#A5680E" stroke-width="1" stroke-dasharray="4 3" marker-end="url(#arrow)"/>
+
+<!-- top satellites -->
+<g>
+  <rect x="40" y="130" width="130" height="56" rx="8" fill="#F1EFE8" stroke="#888780" stroke-width="0.5"/>
+  <text x="105" y="148" text-anchor="middle" dominant-baseline="central" font-family="Arial, sans-serif" font-size="14" font-weight="500" fill="#2C2C2A">Test case</text>
+  <text x="105" y="166" text-anchor="middle" dominant-baseline="central" font-family="Arial, sans-serif" font-size="12" fill="#5F5E5A">images+report</text>
+</g>
+<g>
+  <rect x="190" y="130" width="130" height="56" rx="8" fill="#EEEDFE" stroke="#534AB7" stroke-width="0.5"/>
+  <text x="255" y="148" text-anchor="middle" dominant-baseline="central" font-family="Arial, sans-serif" font-size="14" font-weight="500" fill="#26215C">Corpus</text>
+  <text x="255" y="166" text-anchor="middle" dominant-baseline="central" font-family="Arial, sans-serif" font-size="12" fill="#3C3489">train, offline</text>
+</g>
+<line x1="105" y1="186" x2="105" y2="250" stroke="#5F5E5A" stroke-width="1" marker-end="url(#arrow)"/>
+<line x1="255" y1="186" x2="255" y2="250" stroke="#5F5E5A" stroke-width="1" marker-end="url(#arrow)"/>
+
+<!-- main row -->
+<g>
+  <rect x="40" y="250" width="130" height="56" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+  <text x="105" y="268" text-anchor="middle" dominant-baseline="central" font-family="Arial, sans-serif" font-size="14" font-weight="500" fill="#042C53">Draft</text>
+  <text x="105" y="286" text-anchor="middle" dominant-baseline="central" font-family="Arial, sans-serif" font-size="12" fill="#0C447C">MAIRA-2 frozen</text>
+</g>
+<g>
+  <rect x="190" y="250" width="130" height="56" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+  <text x="255" y="268" text-anchor="middle" dominant-baseline="central" font-family="Arial, sans-serif" font-size="14" font-weight="500" fill="#042C53">Retrieve</text>
+  <text x="255" y="286" text-anchor="middle" dominant-baseline="central" font-family="Arial, sans-serif" font-size="12" fill="#0C447C">signature match</text>
+</g>
+<g>
+  <rect x="340" y="250" width="130" height="56" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+  <text x="405" y="268" text-anchor="middle" dominant-baseline="central" font-family="Arial, sans-serif" font-size="14" font-weight="500" fill="#042C53">Revise</text>
+  <text x="405" y="286" text-anchor="middle" dominant-baseline="central" font-family="Arial, sans-serif" font-size="12" fill="#0C447C">Qwen rewrite</text>
+</g>
+<g>
+  <rect x="490" y="250" width="130" height="56" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+  <text x="555" y="268" text-anchor="middle" dominant-baseline="central" font-family="Arial, sans-serif" font-size="14" font-weight="500" fill="#042C53">Guardrail</text>
+  <text x="555" y="286" text-anchor="middle" dominant-baseline="central" font-family="Arial, sans-serif" font-size="12" fill="#0C447C">F1 floor check</text>
+</g>
+
+<line x1="170" y1="278" x2="190" y2="278" stroke="#5F5E5A" stroke-width="1" marker-end="url(#arrow)"/>
+<line x1="320" y1="278" x2="340" y2="278" stroke="#5F5E5A" stroke-width="1" marker-end="url(#arrow)"/>
+<line x1="470" y1="278" x2="490" y2="278" stroke="#5F5E5A" stroke-width="1" marker-end="url(#arrow)"/>
+
+<!-- draft feeds guardrail directly for the F1 comparison -->
+<path d="M150,306 Q330,360 510,306" fill="none" stroke="#888780" stroke-width="1" stroke-dasharray="4 3" marker-end="url(#arrow)"/>
+
+<!-- bottom satellite -->
+<line x1="555" y1="306" x2="555" y2="370" stroke="#5F5E5A" stroke-width="1" marker-end="url(#arrow)"/>
+<g>
+  <rect x="490" y="370" width="130" height="56" rx="8" fill="#F1EFE8" stroke="#888780" stroke-width="0.5"/>
+  <text x="555" y="388" text-anchor="middle" dominant-baseline="central" font-family="Arial, sans-serif" font-size="14" font-weight="500" fill="#2C2C2A">Final report</text>
+  <text x="555" y="406" text-anchor="middle" dominant-baseline="central" font-family="Arial, sans-serif" font-size="12" fill="#5F5E5A">accept/revert</text>
+</g>
+
+<!-- legend -->
+<rect x="40" y="460" width="12" height="12" rx="3" fill="#F1EFE8" stroke="#888780" stroke-width="0.5"/>
+<text x="56" y="466" dominant-baseline="central" font-family="Arial, sans-serif" font-size="12" fill="#5F5E5A">input / output</text>
+<rect x="200" y="460" width="12" height="12" rx="3" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+<text x="216" y="466" dominant-baseline="central" font-family="Arial, sans-serif" font-size="12" fill="#5F5E5A">per-case pipeline</text>
+<rect x="400" y="460" width="12" height="12" rx="3" fill="#EEEDFE" stroke="#534AB7" stroke-width="0.5"/>
+<text x="416" y="466" dominant-baseline="central" font-family="Arial, sans-serif" font-size="12" fill="#5F5E5A">offline corpus</text>
+<rect x="560" y="460" width="12" height="12" rx="3" fill="#FBEFE2" stroke="#A5680E" stroke-width="0.5"/>
+<text x="576" y="466" dominant-baseline="central" font-family="Arial, sans-serif" font-size="12" fill="#5F5E5A">shared utility</text>
+</svg>
