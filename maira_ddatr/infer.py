@@ -93,7 +93,9 @@ def main():
                                  require_findings=False)
     collate = DDaTRCollator(processor=bundle.processor,
                             text_tokenizer=bundle.text_encoder.tokenizer,
-                            is_train=False, pixel_dtype=torch.bfloat16)
+                            is_train=False, pixel_dtype=torch.bfloat16,
+                            prior_image_mode=args.prior_image_mode,
+                            image_token_index=bundle.spec.image_token_index)
     loader = DataLoader(ds, batch_size=1, shuffle=False, num_workers=4,
                         collate_fn=collate, pin_memory=False)
 
