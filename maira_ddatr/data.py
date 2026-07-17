@@ -341,7 +341,7 @@ class DDaTRCollator:
 if __name__ == "__main__":
     import types
 
-    IMG_TOKEN, TOK_PER_IMG = 999, 4
+    IMG_TOKEN, TOK_PER_IMG, SEP_TOKEN = 999, 4, 88
 
     class _FakeTok:
         eos_token_id = 2
@@ -370,9 +370,15 @@ if __name__ == "__main__":
             if prior_frontal is not None:
                 blocks.append(prior_frontal)
             n_imgs = len(blocks)
-            # prompt: [BOS, IMGxK per image block in stack order, text...]
+            # prompt: [BOS, IMGxK (current), SEP, IMGxK (prior), text...].
+            # The real Maira2 prompt separates image spans with non-image tokens
+            # (probe: span0 ends @1401, span1 starts @1407), so image runs are
+            # NOT contiguous -- mirror that with SEP_TOKEN between blocks, else
+            # _image_runs would merge them into one span.
             ids = [1]
-            for _ in blocks:
+            for bi, _ in enumerate(blocks):
+                if bi > 0:
+                    ids += [SEP_TOKEN]            # separator between image spans
                 ids += [IMG_TOKEN] * TOK_PER_IMG
             ids += [50, 51]                       # a little instruction text
             input_ids = torch.tensor([ids])
@@ -399,7 +405,7 @@ if __name__ == "__main__":
             "indication": None, "technique": None, "comparison": None,
             "change_label": "change", "has_prior": True}
     s = coll([item])
-    n_prompt = 1 + 2 * TOK_PER_IMG + 2
+    n_prompt = 1 + 2 * TOK_PER_IMG + 1 + 2      # BOS + 2 images + SEP between them + text
     n_tgt = len("small new effusion".split()) + 1                 # + eos
     assert s["input_ids"].shape[1] == n_prompt + n_tgt
     assert (s["labels"][0, :n_prompt] == -100).all(), "prompt must be masked"
@@ -436,8 +442,10 @@ if __name__ == "__main__":
                                image_token_index=IMG_TOKEN)
     s4 = coll_strip([item])
     # prompt should now carry only ONE image block's worth of IMG tokens (current),
-    # i.e. TOK_PER_IMG fewer than keep_as_tokens.
-    n_prompt_strip = 1 + TOK_PER_IMG + 2
+    # i.e. TOK_PER_IMG fewer than keep_as_tokens. The SEP token that separated the
+    # two image spans stays (we excise only the prior image's placeholder run,
+    # matching the real prompt where inter-span label tokens remain).
+    n_prompt_strip = 1 + TOK_PER_IMG + 1 + 2    # BOS + current image + leftover SEP + text
     assert s4["input_ids"].shape[1] == n_prompt_strip + n_tgt, s4["input_ids"].shape
     assert (s4["input_ids"][0] == IMG_TOKEN).sum().item() == TOK_PER_IMG, \
         "strip mode must leave exactly one image block (current) in the prompt"
