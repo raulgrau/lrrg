@@ -176,6 +176,12 @@ class DDaTRCollator:
     max_target_len: int = 256
     image_stack_order: tuple = MAIRA2_IMAGE_STACK_ORDER
     pixel_dtype: Optional[torch.dtype] = None   # set to bf16 to match the vision tower
+    # strip_to_encoder_only: the prior frontal must NOT occupy LLM token slots
+    # (it feeds only the DDaTR encoder fusion). The processor still preprocesses
+    # it -- so its pixels reach the encoder -- but its <image> placeholder span is
+    # excised from the LLM prompt here. Requires image_token_index to find the span.
+    prior_image_mode: str = "keep_as_tokens"
+    image_token_index: Optional[int] = None
 
     def _build_prompt(self, item: dict):
         """Call MAIRA-2's processor in reporting mode -> inference prompt + pixels.
@@ -213,6 +219,44 @@ class DDaTRCollator:
         pixel_values = proc["pixel_values"]
         return input_ids, attention_mask, pixel_values, present
 
+    @staticmethod
+    def _image_runs(ids_row, image_token_index):
+        """Contiguous [start, end) runs of image_token_index in a 1-D id list."""
+        runs, i, n = [], 0, len(ids_row)
+        while i < n:
+            if int(ids_row[i]) == image_token_index:
+                j = i
+                while j < n and int(ids_row[j]) == image_token_index:
+                    j += 1
+                runs.append((i, j))
+                i = j
+            else:
+                i += 1
+        return runs
+
+    def _excise_prior_image_span(self, input_ids, attention_mask, ordered_present):
+        """Remove the prior-frontal <image> token span from the LLM prompt.
+
+        The prior image is the run at index ordered_present.index('prior_frontal')
+        among the image runs (blocks appear in image_stack_order, and pixel_values
+        stacked the same way -- verified via probe_processor.py). Its pixels are
+        kept elsewhere and still feed the DDaTR encoder; only the LLM slots go.
+        """
+        if self.image_token_index is None:
+            raise ValueError("strip_to_encoder_only needs image_token_index "
+                             "(pass bundle.spec.image_token_index to the collator)")
+        k = ordered_present.index("prior_frontal")
+        row = input_ids[0].tolist()
+        runs = self._image_runs(row, self.image_token_index)
+        if len(runs) <= k:
+            raise RuntimeError(
+                f"expected >= {k+1} image spans in the prompt but found {len(runs)}; "
+                f"check image_token_index / image_stack_order vs probe_processor.py")
+        s, e = runs[k]
+        keep = torch.ones(input_ids.shape[1], dtype=torch.bool)
+        keep[s:e] = False
+        return input_ids[:, keep], attention_mask[:, keep]
+
     def _split_pixels(self, pixel_values: torch.Tensor, present_blocks: list[str]):
         """Map the (N,C,H,W) stack to named per-image tensors, each (1,C,H,W).
 
@@ -235,6 +279,16 @@ class DDaTRCollator:
 
         input_ids, attention_mask, pixel_values, present = self._build_prompt(item)
         named_px = self._split_pixels(pixel_values, present)
+
+        # strip mode: drop the prior-frontal <image> span from the LLM prompt so
+        # its 1369 slots don't cost the decoder anything. Prior pixels stay in
+        # named_px and still feed the DDaTR encoder. Only meaningful when a prior
+        # frontal is actually present.
+        if (self.prior_image_mode == "strip_to_encoder_only"
+                and "prior_frontal" in named_px):
+            ordered_present = [b for b in self.image_stack_order if b in present]
+            input_ids, attention_mask = self._excise_prior_image_span(
+                input_ids, attention_mask, ordered_present)
 
         sample = {
             "study_id": item["study_id"],
@@ -301,15 +355,24 @@ if __name__ == "__main__":
 
     class _FakeProcessor:
         tokenizer = _FakeTok()
-        def format_and_preprocess_reporting_input(self, *, frontal, prior_frontal=None,
+        # signature mirrors the real Maira2Processor (current_frontal / current_lateral
+        # required explicitly, even as None) -- see probe_processor.py.
+        def format_and_preprocess_reporting_input(self, *, current_frontal,
+                                                  current_lateral=None, prior_frontal=None,
                                                   prior_report=None, indication=None,
                                                   technique=None, comparison=None,
                                                   return_tensors="pt", get_grounding=False):
-            n_imgs = 1 + (1 if prior_frontal is not None else 0)
-            # prompt: [BOS, IMGxK (current), (IMGxK prior), text...]
-            ids = [1]
-            ids += [IMG_TOKEN] * TOK_PER_IMG
+            # stack order matches MAIRA2_IMAGE_STACK_ORDER:
+            # current_frontal, current_lateral, prior_frontal
+            blocks = [current_frontal]
+            if current_lateral is not None:
+                blocks.append(current_lateral)
             if prior_frontal is not None:
+                blocks.append(prior_frontal)
+            n_imgs = len(blocks)
+            # prompt: [BOS, IMGxK per image block in stack order, text...]
+            ids = [1]
+            for _ in blocks:
                 ids += [IMG_TOKEN] * TOK_PER_IMG
             ids += [50, 51]                       # a little instruction text
             input_ids = torch.tensor([ids])
@@ -366,4 +429,28 @@ if __name__ == "__main__":
     assert "labels" not in s3
     assert s3["input_ids"].shape[1] == n_prompt           # prompt only, no target
     print("[ok] inference mode: no target appended, no labels")
+
+    # --- strip_to_encoder_only: prior image span excised from the LLM prompt ---
+    coll_strip = DDaTRCollator(processor=proc, text_tokenizer=_fake_text_tok,
+                               is_train=True, prior_image_mode="strip_to_encoder_only",
+                               image_token_index=IMG_TOKEN)
+    s4 = coll_strip([item])
+    # prompt should now carry only ONE image block's worth of IMG tokens (current),
+    # i.e. TOK_PER_IMG fewer than keep_as_tokens.
+    n_prompt_strip = 1 + TOK_PER_IMG + 2
+    assert s4["input_ids"].shape[1] == n_prompt_strip + n_tgt, s4["input_ids"].shape
+    assert (s4["input_ids"][0] == IMG_TOKEN).sum().item() == TOK_PER_IMG, \
+        "strip mode must leave exactly one image block (current) in the prompt"
+    # prior pixels MUST survive -- they still feed the DDaTR encoder fusion
+    assert s4["prior_frontal_pixels"] is not None, "strip mode dropped prior pixels!"
+    assert s4["prior_report_ids"] is not None, "strip mode should keep the prior report"
+    # label masking still aligns to the (now shorter) prompt
+    assert (s4["labels"][0, :n_prompt_strip] == -100).all()
+    assert (s4["labels"][0, n_prompt_strip:] != -100).all()
+    print("[ok] strip mode: prior image span excised, prior pixels+report kept, labels aligned")
+
+    # no-prior case in strip mode must be a no-op (nothing to excise)
+    s5 = coll_strip([item2])
+    assert s5["input_ids"].shape[1] == n_prompt2 + n_tgt, s5["input_ids"].shape
+    print("[ok] strip mode: no-prior sample unchanged (nothing to excise)")
     print("all data.py self-tests passed")

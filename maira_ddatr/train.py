@@ -177,7 +177,9 @@ def main():
     collate = DDaTRCollator(processor=bundle.processor,
                             text_tokenizer=bundle.text_encoder.tokenizer,
                             is_train=True, max_target_len=args.max_target_len,
-                            pixel_dtype=torch.bfloat16)
+                            pixel_dtype=torch.bfloat16,
+                            prior_image_mode=args.prior_image_mode,
+                            image_token_index=bundle.spec.image_token_index)
     # num_workers=0: model load (a few lines up) already initialized a CUDA
     # context in this process. On Linux, DataLoader workers default to `fork`,
     # and forking a process that already holds a CUDA context is a classic
