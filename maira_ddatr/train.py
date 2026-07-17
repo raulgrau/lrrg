@@ -149,6 +149,12 @@ def main():
     ap.add_argument("--grad_checkpointing_reentrant", action="store_true",
                     help="use the legacy reentrant checkpoint impl instead of the newer, "
                          "usually-cheaper use_reentrant=False (default off)")
+    ap.add_argument("--num_workers", type=int, default=0,
+                    help="DataLoader workers (spawn context). 0 = serial (safe on a "
+                         "local fast disk); use 6-8 when images are on a slow/network "
+                         "filesystem like a Modal Volume to hide data loading behind compute")
+    ap.add_argument("--prefetch_factor", type=int, default=4,
+                    help="batches prefetched per worker (only used when num_workers>0)")
     args = ap.parse_args()
 
     import torch
@@ -180,15 +186,29 @@ def main():
                             pixel_dtype=torch.bfloat16,
                             prior_image_mode=args.prior_image_mode,
                             image_token_index=bundle.spec.image_token_index)
-    # num_workers=0: model load (a few lines up) already initialized a CUDA
-    # context in this process. On Linux, DataLoader workers default to `fork`,
-    # and forking a process that already holds a CUDA context is a classic
-    # silent-deadlock trigger -- no error, no crash, workers just never come up
-    # and the loop hangs forever on the first batch. Single-process loading is
-    # safe here: batch_size=1, and the GPU-bound QLoRA forward/backward through
-    # a 7B model dominates wall time anyway, so there's no real throughput cost.
-    loader = DataLoader(ds, batch_size=1, shuffle=True, num_workers=0,
-                        collate_fn=collate, pin_memory=True)
+    # Data loading is serial and can dominate when images live on a slow/network
+    # filesystem (e.g. a Modal Volume: profiling showed data=66% of step time on
+    # an A100, starving the GPU). num_workers>0 parallelizes the per-sample JPEG
+    # reads + MAIRA-2 preprocessing and prefetches them behind the GPU compute.
+    #
+    # WHY spawn, not the default fork: model load (a few lines up) already put a
+    # CUDA context in this process, and forking a CUDA-initialized process is a
+    # classic silent-deadlock (workers never come up, first batch hangs forever).
+    # The "spawn" start method sidesteps that -- workers start fresh, re-pickle
+    # the dataset + processor, and never inherit the CUDA context. num_workers=0
+    # keeps the old safe single-process path (good for a local GPU with fast disk).
+    loader_kwargs = dict(batch_size=1, shuffle=True, collate_fn=collate, pin_memory=True)
+    if args.num_workers > 0:
+        import multiprocessing as mp
+        loader_kwargs.update(
+            num_workers=args.num_workers,
+            multiprocessing_context=mp.get_context("spawn"),
+            persistent_workers=True,          # don't re-spawn every epoch
+            prefetch_factor=args.prefetch_factor,
+        )
+    else:
+        loader_kwargs["num_workers"] = 0
+    loader = DataLoader(ds, **loader_kwargs)
 
     trainable = list(_trainable_named_params(bundle).values())
     optim = torch.optim.AdamW(trainable, lr=args.lr, weight_decay=args.weight_decay)

@@ -124,6 +124,9 @@ def rewrite(manifest_text: str) -> str:
     volumes={DATA_MOUNT: data_vol, RUNS_MOUNT: runs_vol},
     secrets=[hf_secret],
     timeout=24 * 60 * 60,         # long; train.py checkpoints + is resumable
+    cpu=8.0,                      # cores for the DataLoader workers (Volume reads
+                                  # + MAIRA-2 preprocessing) -- needed to hide the
+                                  # network-filesystem data-load latency behind GPU
 )
 def train(
     train_manifest_text: str,
@@ -134,6 +137,7 @@ def train(
     lr: float = 1e-4,
     save_every: int = 500,
     no_grad_checkpointing: bool = True,   # 80GB should fit batch=1 w/o checkpointing
+    num_workers: int = 6,                 # parallel prefetch over the Volume
     smoke: bool = False,                  # short profiled run to validate the chain
     extra_args: list[str] | None = None,
 ):
@@ -163,6 +167,7 @@ def train(
         "--epochs", str(epochs),
         "--lr", str(lr),
         "--save_every", str(1_000_000 if smoke else save_every),
+        "--num_workers", str(num_workers),
     ]
     if no_grad_checkpointing:
         cmd.append("--no_grad_checkpointing")
