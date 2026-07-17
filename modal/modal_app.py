@@ -134,6 +134,7 @@ def train(
     lr: float = 1e-4,
     save_every: int = 500,
     no_grad_checkpointing: bool = True,   # 80GB should fit batch=1 w/o checkpointing
+    smoke: bool = False,                  # short profiled run to validate the chain
     extra_args: list[str] | None = None,
 ):
     import subprocess
@@ -146,7 +147,10 @@ def train(
     with open(manifest_path, "w") as f:
         f.write(train_manifest_text)
 
-    out_dir = os.path.join(RUNS_MOUNT, f"m1_{prior_image_mode}")
+    # smoke: a throwaway ~40-step profiled run to prove image build + Volume
+    # mount + MAIRA-2 load + real steps, and print the true per-sample time on
+    # this GPU -- before committing to the full ~10-16h epoch. Never checkpoints.
+    out_dir = os.path.join(RUNS_MOUNT, "smoke" if smoke else f"m1_{prior_image_mode}")
     resume = os.path.join(out_dir, "ckpt.pt")
 
     cmd = [
@@ -158,11 +162,13 @@ def train(
         "--grad_accum", str(grad_accum),
         "--epochs", str(epochs),
         "--lr", str(lr),
-        "--save_every", str(save_every),
+        "--save_every", str(1_000_000 if smoke else save_every),
     ]
     if no_grad_checkpointing:
         cmd.append("--no_grad_checkpointing")
-    if os.path.exists(resume):
+    if smoke:
+        cmd += ["--max_steps", "40", "--profile", "--profile_steps", "40", "--log_every", "4"]
+    if not smoke and os.path.exists(resume):
         cmd += ["--resume", resume]
         print(f"[train] resuming from {resume}")
     if extra_args:
@@ -178,12 +184,16 @@ def train(
 #  Local orchestration
 # --------------------------------------------------------------------------- #
 @app.local_entrypoint()
-def run_training(manifest: str = "../train_pairs_ulcx.jsonl"):
-    """modal run modal_app.py::run_training --manifest ../train_pairs_ulcx.jsonl
+def run_training(manifest: str = "../train_pairs_ulcx.jsonl", smoke: bool = False):
+    """Rewrite the manifest to the Volume mount, then launch training.
 
-    Rewrites the manifest to the Volume mount, then launches training.
+    Smoke first (minutes, validates the whole chain + prints per-sample time):
+        modal run modal_app.py::run_training --smoke
+
+    Then the full epoch (detached, ~10-16h):
+        modal run --detach modal_app.py::run_training
     """
     with open(manifest) as f:
         raw = f.read()
     rewritten = rewrite.remote(raw)          # repoint image paths at /data
-    train.remote(rewritten)
+    train.remote(rewritten, smoke=smoke)
