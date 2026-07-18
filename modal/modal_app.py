@@ -239,6 +239,47 @@ def infer(
 
 
 # --------------------------------------------------------------------------- #
+#  4. Baseline  (base MAIRA-2, no DDaTR) -- the comparison point, on a cheap GPU
+# --------------------------------------------------------------------------- #
+@app.function(
+    gpu="L4",                     # 24GB, ~1/3 the price of A100-80GB; 7B bf16 fits
+    volumes={DATA_MOUNT: data_vol, RUNS_MOUNT: runs_vol},
+    secrets=[hf_secret],
+    timeout=8 * 60 * 60,          # L4 is slower per token; resumable, so safe
+    cpu=8.0,
+)
+def baseline(
+    eval_manifest_text: str,
+    out_name: str = "preds_baseline.json",
+    max_new_tokens: int = 256,
+):
+    import subprocess
+
+    os.environ.setdefault("HF_HOME", os.path.join(DATA_MOUNT, "hf"))
+
+    manifest_path = "/root/eval_modal.jsonl"
+    with open(manifest_path, "w") as f:
+        f.write(eval_manifest_text)
+
+    # write alongside the DDaTR preds so both sit together for scoring
+    out_dir = os.path.join(RUNS_MOUNT, "m1_strip_to_encoder_only")
+    os.makedirs(out_dir, exist_ok=True)
+    out_json = os.path.join(out_dir, out_name)
+
+    cmd = [
+        "python", "baseline_infer.py",
+        "--eval_manifest", manifest_path,
+        "--out_json", out_json,
+        "--max_new_tokens", str(max_new_tokens),
+    ]
+    print("[baseline] running:", " ".join(cmd), flush=True)
+    subprocess.run(cmd, cwd="/root/maira_ddatr", check=True)
+    runs_vol.commit()
+    print(f"[baseline] wrote {out_json}  (pull with: modal volume get lrrg-runs "
+          f"{out_json.replace(RUNS_MOUNT, '').lstrip('/')} .)")
+
+
+# --------------------------------------------------------------------------- #
 #  Local orchestration
 # --------------------------------------------------------------------------- #
 @app.local_entrypoint()
@@ -271,3 +312,18 @@ def run_inference(manifest: str = "../test_pairs_ulcx.jsonl",
         raw = f.read()
     rewritten = rewrite.remote(raw)          # repoint image paths at /data
     infer.remote(rewritten, prior_image_mode=prior_image_mode)
+
+
+@app.local_entrypoint()
+def run_baseline(manifest: str = "../test_pairs_ulcx.jsonl"):
+    """Generate base MAIRA-2 (no DDaTR) predictions on the test split, on an L4.
+
+        modal run modal_app.py::run_baseline
+
+    Writes preds_baseline.json to the lrrg-runs Volume. Then, on cgpool:
+        score_single.py --preds preds_test.json --baseline preds_baseline.json
+    """
+    with open(manifest) as f:
+        raw = f.read()
+    rewritten = rewrite.remote(raw)          # repoint image paths at /data
+    baseline.remote(rewritten)
