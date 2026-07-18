@@ -297,6 +297,18 @@ def main():
                     print("[done] hit max_steps")
                     return
 
+                # Stop at the planned total. On a RESUMED run, opt_step is
+                # restored (e.g. 2500) but the dataloader restarts from the top of
+                # the epoch, so without this guard the loop would run a FULL extra
+                # epoch of steps (ending ~total+resume) at the LR-schedule floor.
+                # opt_step counts cumulative updates, so total_opt_steps updates =
+                # one epoch's worth of optimization regardless of restarts.
+                if args.max_steps <= 0 and opt_step >= total_opt_steps:
+                    save_checkpoint(bundle, optim, sched, opt_step, args.out_dir,
+                                    meta={"injection": args.injection, "final": True})
+                    print(f"[done] reached total_opt_steps ({total_opt_steps})")
+                    return
+
             if args.profile and prof_n >= args.profile_steps:
                 total = sum(prof.values()) or 1e-9
                 print(f"  [profile] over {prof_n} micro-steps (s/sample, % of total):")
