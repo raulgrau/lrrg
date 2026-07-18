@@ -66,6 +66,9 @@ def main():
     ap.add_argument("--flat", action="store_true",
                     help="write {study_id: findings} instead of records")
     ap.add_argument("--save_every", type=int, default=50)
+    ap.add_argument("--num_workers", type=int, default=4,
+                    help="DataLoader workers (spawn context; safe after CUDA init). "
+                         "0 = serial. Use 6-8 when images are on a slow/network FS.")
     args = ap.parse_args()
 
     import torch
@@ -96,8 +99,17 @@ def main():
                             is_train=False, pixel_dtype=torch.bfloat16,
                             prior_image_mode=args.prior_image_mode,
                             image_token_index=bundle.spec.image_token_index)
-    loader = DataLoader(ds, batch_size=1, shuffle=False, num_workers=4,
-                        collate_fn=collate, pin_memory=False)
+    # spawn context: fork after CUDA init (model already loaded above) can
+    # silently deadlock -- workers never come up, loop hangs on batch 0.
+    loader_kwargs = dict(batch_size=1, shuffle=False, collate_fn=collate, pin_memory=True)
+    if args.num_workers > 0:
+        import multiprocessing as mp
+        loader_kwargs.update(num_workers=args.num_workers,
+                             multiprocessing_context=mp.get_context("spawn"),
+                             persistent_workers=True, prefetch_factor=4)
+    else:
+        loader_kwargs["num_workers"] = 0
+    loader = DataLoader(ds, **loader_kwargs)
 
     records = _load_done(args.out_json)
     print(f"[infer] {len(ds)} studies | {len(records)} already done -> resuming")

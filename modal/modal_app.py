@@ -186,6 +186,59 @@ def train(
 
 
 # --------------------------------------------------------------------------- #
+#  3. Infer  (wraps the EXISTING infer.py; generates DDaTR predictions JSON)
+# --------------------------------------------------------------------------- #
+@app.function(
+    gpu="A100-80GB",
+    volumes={DATA_MOUNT: data_vol, RUNS_MOUNT: runs_vol},
+    secrets=[hf_secret],
+    timeout=6 * 60 * 60,          # ~2k pairs of autoregressive decode; resumable
+    cpu=8.0,
+)
+def infer(
+    eval_manifest_text: str,
+    injection: str = "M1",
+    prior_image_mode: str = "strip_to_encoder_only",   # MUST match the trained ckpt
+    ckpt_name: str = "ckpt.pt",
+    out_name: str = "preds_test.json",
+    max_new_tokens: int = 256,
+    num_workers: int = 6,
+):
+    import subprocess
+
+    os.environ.setdefault("HF_HOME", os.path.join(DATA_MOUNT, "hf"))
+
+    manifest_path = "/root/eval_modal.jsonl"
+    with open(manifest_path, "w") as f:
+        f.write(eval_manifest_text)
+
+    # the trained checkpoint lives where train.py wrote it (same naming scheme)
+    run_dir = os.path.join(RUNS_MOUNT, f"m1_{prior_image_mode}")
+    ckpt = os.path.join(run_dir, ckpt_name)
+    if not os.path.exists(ckpt):
+        raise FileNotFoundError(
+            f"checkpoint not found: {ckpt}\n  (train first, or pass the right "
+            f"prior_image_mode / ckpt_name)")
+    out_json = os.path.join(run_dir, out_name)
+
+    cmd = [
+        "python", "infer.py",
+        "--eval_manifest", manifest_path,
+        "--ckpt", ckpt,
+        "--out_json", out_json,
+        "--injection", injection,
+        "--prior_image_mode", prior_image_mode,
+        "--max_new_tokens", str(max_new_tokens),
+        "--num_workers", str(num_workers),
+    ]
+    print("[infer] running:", " ".join(cmd), flush=True)
+    subprocess.run(cmd, cwd="/root/maira_ddatr", check=True)
+    runs_vol.commit()
+    print(f"[infer] wrote {out_json}  (pull with: modal volume get lrrg-runs "
+          f"{out_json.replace(RUNS_MOUNT, '').lstrip('/')} .)")
+
+
+# --------------------------------------------------------------------------- #
 #  Local orchestration
 # --------------------------------------------------------------------------- #
 @app.local_entrypoint()
@@ -202,3 +255,19 @@ def run_training(manifest: str = "../train_pairs_ulcx.jsonl", smoke: bool = Fals
         raw = f.read()
     rewritten = rewrite.remote(raw)          # repoint image paths at /data
     train.remote(rewritten, smoke=smoke)
+
+
+@app.local_entrypoint()
+def run_inference(manifest: str = "../test_pairs_ulcx.jsonl",
+                  prior_image_mode: str = "strip_to_encoder_only"):
+    """Generate DDaTR predictions on the test split from the trained checkpoint.
+
+        modal run modal_app.py::run_inference
+
+    prior_image_mode MUST match what the checkpoint was trained with. Writes
+    preds_test.json to the lrrg-runs Volume; pull it to cgpool for scoring.
+    """
+    with open(manifest) as f:
+        raw = f.read()
+    rewritten = rewrite.remote(raw)          # repoint image paths at /data
+    infer.remote(rewritten, prior_image_mode=prior_image_mode)
