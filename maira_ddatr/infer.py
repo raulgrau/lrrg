@@ -69,6 +69,13 @@ def main():
     ap.add_argument("--num_workers", type=int, default=4,
                     help="DataLoader workers (spawn context; safe after CUDA init). "
                          "0 = serial. Use 6-8 when images are on a slow/network FS.")
+    ap.add_argument("--dummy_prior", default="none",
+                    choices=["none", "drop", "shuffle"],
+                    help="prior-corruption ablation to test causal use of the prior: "
+                         "'drop' removes the prior entirely (has_prior->0, tests total "
+                         "prior contribution); 'shuffle' gives each case ANOTHER patient's "
+                         "prior (tests whether the SPECIFIC prior matters). Compare the "
+                         "resulting scores against the real-prior run.")
     args = ap.parse_args()
 
     import torch
@@ -94,6 +101,41 @@ def main():
 
     ds = LongitudinalPairDataset(args.eval_manifest, image_root=args.image_root,
                                  require_findings=False)
+
+    # --- dummy-prior ablations: mutate ds.records BEFORE loading so the collator
+    # builds a CONSISTENT prompt for the degraded prior (patching an already-built
+    # prompt would leave the prior report text dangling). Keys come from FIELD_MAP.
+    if args.dummy_prior != "none":
+        from data import FIELD_MAP
+        pi_key = FIELD_MAP.get("prior_frontal_path")   # e.g. "prior_image"
+        pr_key = FIELD_MAP.get("prior_report")         # e.g. "prior_findings"
+        recs = ds.records
+        if args.dummy_prior == "drop":
+            for r in recs:
+                if pi_key:
+                    r[pi_key] = None
+                if pr_key:
+                    r[pr_key] = None
+            print(f"[dummy_prior=drop] removed the prior from all {len(recs)} cases "
+                  f"(has_prior->0)")
+        elif args.dummy_prior == "shuffle":
+            import random
+            n = len(recs)
+            perm = list(range(n))
+            random.Random(0).shuffle(perm)
+            # repair any fixed points so NO case keeps its own prior (derangement)
+            for i in range(n):
+                if perm[i] == i:
+                    perm[i], perm[(i + 1) % n] = perm[(i + 1) % n], perm[i]
+            donors = [(recs[perm[i]].get(pi_key), recs[perm[i]].get(pr_key))
+                      for i in range(n)]
+            for r, (pi, pr) in zip(recs, donors):
+                if pi_key:
+                    r[pi_key] = pi
+                if pr_key:
+                    r[pr_key] = pr
+            print(f"[dummy_prior=shuffle] reassigned each case a DIFFERENT patient's "
+                  f"prior ({n} cases, no fixed points)")
     collate = DDaTRCollator(processor=bundle.processor,
                             text_tokenizer=bundle.text_encoder.tokenizer,
                             is_train=False, pixel_dtype=torch.bfloat16,
