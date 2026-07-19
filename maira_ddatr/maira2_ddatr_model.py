@@ -314,13 +314,15 @@ def build_model(
     ).to(device=device, dtype=torch.bfloat16)
 
     # sanity: the injected enhancement must be visible at the selected feature layer
-    sel = spec.normalized_feature_layer(injected.num_layers)        # index into hidden_states
-    max_inj = max(injected.injection_indices) + 1                   # hidden_states index after that block
-    assert max_inj >= sel, (
-        f"deepest injection feeds hidden_states[{max_inj}] but features are read at "
-        f"hidden_states[{sel}]; injection happens AFTER the read and would be ignored. "
-        f"For M1, inject at the feature layer (block {sel})."
-    )
+    # (skipped for injection="none" -- the fine-tuned baseline has no injection).
+    if injected.injection_indices:
+        sel = spec.normalized_feature_layer(injected.num_layers)    # index into hidden_states
+        max_inj = max(injected.injection_indices) + 1               # hidden_states index after that block
+        assert max_inj >= sel, (
+            f"deepest injection feeds hidden_states[{max_inj}] but features are read at "
+            f"hidden_states[{sel}]; injection happens AFTER the read and would be ignored. "
+            f"For M1, inject at the feature layer (block {sel})."
+        )
 
     text_encoder = PriorTextEncoder(
         text_encoder_name, out_dim=spec.hidden_dim,
