@@ -154,7 +154,10 @@ def train(
     # smoke: a throwaway ~40-step profiled run to prove image build + Volume
     # mount + MAIRA-2 load + real steps, and print the true per-sample time on
     # this GPU -- before committing to the full ~10-16h epoch. Never checkpoints.
-    out_dir = os.path.join(RUNS_MOUNT, "smoke" if smoke else f"m1_{prior_image_mode}")
+    # include injection in the run name so M1 / M2 / none-baseline checkpoints
+    # never overwrite each other on the Volume.
+    tag = str(injection).replace(",", "-")
+    out_dir = os.path.join(RUNS_MOUNT, "smoke" if smoke else f"{tag}_{prior_image_mode}")
     resume = os.path.join(out_dir, "ckpt.pt")
 
     cmd = [
@@ -212,8 +215,9 @@ def infer(
     with open(manifest_path, "w") as f:
         f.write(eval_manifest_text)
 
-    # the trained checkpoint lives where train.py wrote it (same naming scheme)
-    run_dir = os.path.join(RUNS_MOUNT, f"m1_{prior_image_mode}")
+    # the trained checkpoint lives where train.py wrote it (same tagging scheme)
+    tag = str(injection).replace(",", "-")
+    run_dir = os.path.join(RUNS_MOUNT, f"{tag}_{prior_image_mode}")
     ckpt = os.path.join(run_dir, ckpt_name)
     if not os.path.exists(ckpt):
         raise FileNotFoundError(
@@ -283,35 +287,48 @@ def baseline(
 #  Local orchestration
 # --------------------------------------------------------------------------- #
 @app.local_entrypoint()
-def run_training(manifest: str = "../train_pairs_ulcx.jsonl", smoke: bool = False):
+def run_training(manifest: str = "../train_pairs_ulcx.jsonl", smoke: bool = False,
+                 injection: str = "M1",
+                 prior_image_mode: str = "strip_to_encoder_only",
+                 no_grad_checkpointing: bool = True):
     """Rewrite the manifest to the Volume mount, then launch training.
 
-    Smoke first (minutes, validates the whole chain + prints per-sample time):
-        modal run modal_app.py::run_training --smoke
+    M1 (done) reference:
+        modal run --detach modal_app.py::run_training --injection M1
+    M2 (multi-scale, strip mode):
+        modal run --detach modal_app.py::run_training --injection M2
+    Fine-tuned no-DDaTR baseline (native late fusion -> keep_as_tokens):
+        modal run --detach modal_app.py::run_training \\
+            --injection none --prior-image-mode keep_as_tokens
 
-    Then the full epoch (detached, ~10-16h):
-        modal run --detach modal_app.py::run_training
+    Smoke-test any config first (minutes, prints per-sample time):
+        modal run modal_app.py::run_training --smoke --injection M2
     """
     with open(manifest) as f:
         raw = f.read()
     rewritten = rewrite.remote(raw)          # repoint image paths at /data
-    train.remote(rewritten, smoke=smoke)
+    train.remote(rewritten, smoke=smoke, injection=injection,
+                 prior_image_mode=prior_image_mode,
+                 no_grad_checkpointing=no_grad_checkpointing)
 
 
 @app.local_entrypoint()
 def run_inference(manifest: str = "../test_pairs_ulcx.jsonl",
-                  prior_image_mode: str = "strip_to_encoder_only"):
-    """Generate DDaTR predictions on the test split from the trained checkpoint.
+                  injection: str = "M1",
+                  prior_image_mode: str = "strip_to_encoder_only",
+                  out_name: str = "preds_test.json"):
+    """Generate predictions on the test split from a trained checkpoint.
 
-        modal run modal_app.py::run_inference
-
-    prior_image_mode MUST match what the checkpoint was trained with. Writes
-    preds_test.json to the lrrg-runs Volume; pull it to cgpool for scoring.
+    injection + prior_image_mode MUST match the run you want to evaluate:
+        M2:        --injection M2  (out_name preds_m2.json)
+        baseline:  --injection none --prior-image-mode keep_as_tokens (out_name preds_ftbaseline.json)
+    Writes to the lrrg-runs Volume; pull it to cgpool for scoring.
     """
     with open(manifest) as f:
         raw = f.read()
     rewritten = rewrite.remote(raw)          # repoint image paths at /data
-    infer.remote(rewritten, prior_image_mode=prior_image_mode)
+    infer.remote(rewritten, injection=injection, prior_image_mode=prior_image_mode,
+                 out_name=out_name)
 
 
 @app.local_entrypoint()

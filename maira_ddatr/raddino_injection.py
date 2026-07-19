@@ -59,11 +59,13 @@ def resolve_injection_indices(spec: str | list[int], num_layers: int) -> list[in
     """
     if isinstance(spec, str):
         s = spec.upper()
+        if s in ("NONE", "OFF", ""):
+            return []                       # no DDaTR at all (fine-tuned baseline)
         if s == "M1":
             return [num_layers - 1]
         if s == "M2":
             return [round(num_layers * q / 4) - 1 for q in (1, 2, 3, 4)]
-        raise ValueError(f"unknown injection spec '{spec}' (use 'M1','M2', or a 1-indexed list)")
+        raise ValueError(f"unknown injection spec '{spec}' (use 'none','M1','M2', or a 1-indexed list)")
     # explicit list, interpreted as 1-indexed block numbers
     idx = sorted({int(i) - 1 for i in spec})
     for i in idx:
@@ -113,7 +115,11 @@ class InjectedRadDino(nn.Module):
         # only need to reach as far back as this depth. For M1 (injection at the
         # final block only) this skips backprop bookkeeping for 11 of 12 blocks,
         # in BOTH the prior and current passes. See _encode_prior/_encode_current.
-        self.first_injection = min(self.injection_indices)
+        # injection="none": no DDaTR at all -> the whole ViT runs under no_grad
+        # (first_injection == num_layers), a pure vanilla RAD-DINO forward. Used
+        # for the fine-tuned-without-DDaTR baseline (prior via native late fusion).
+        self.first_injection = min(self.injection_indices) if self.injection_indices \
+            else self.num_layers
 
     # ----- internal: run one block (handles tuple/tensor return) ----------- #
     @staticmethod
@@ -184,6 +190,12 @@ class InjectedRadDino(nn.Module):
         B = cur_pixels.shape[0]
         if has_prior is None:
             has_prior = torch.zeros(B, device=cur_pixels.device)
+
+        # injection="none": no DDaTR blocks -> skip the prior pass entirely and
+        # return a pure vanilla RAD-DINO forward of the current image.
+        if not self.injection_indices:
+            last, all_hidden = self._encode_current(cur_pixels, {}, has_prior)
+            return last, tuple(all_hidden)
 
         any_prior = bool((has_prior > 0).any().item()) and prior_pixels is not None
         if any_prior:
@@ -283,3 +295,21 @@ if __name__ == "__main__":
         del inj, last, hs, cur, prior, txt
         vit.zero_grad(set_to_none=True)
         gc.collect()
+
+    # injection="none": no DDaTR blocks -> pure vanilla RAD-DINO forward, for the
+    # fine-tuned-without-DDaTR baseline. Prior is ignored by the encoder (it goes
+    # via the LLM prompt in keep_as_tokens mode instead).
+    inj0 = InjectedRadDino(vit, injection="none", num_prefix_tokens=P,
+                           grid_hw=(37, 37), hidden_dim=C, txt_dim=C, num_heads=12)
+    assert inj0.injection_indices == [], inj0.injection_indices
+    assert len(inj0.blocks) == 0
+    cur = torch.randn(B, 3, 518, 518)
+    last0, hs0 = inj0(cur, None, None, None, torch.zeros(B))
+    with torch.no_grad():
+        h = vit.embeddings(cur)
+        for layer in vit.encoder.layer:
+            h = layer(h)[0]
+        vanilla = vit.layernorm(h)
+    assert torch.allclose(last0, vanilla, atol=1e-5), "injection=none diverged from vanilla"
+    print("\nspec='none' -> no injection")
+    print("  [ok] injection=none == vanilla RAD-DINO forward (prior ignored by encoder)")
