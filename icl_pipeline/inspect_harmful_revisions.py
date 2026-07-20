@@ -228,6 +228,12 @@ def main():
     parser.add_argument("--n", type=int, default=30, help="how many worst-regression cases to dump")
     parser.add_argument("--also-best", type=int, default=0, help="also dump this many biggest improvements, for contrast")
     parser.add_argument("--out", default="harmful_revisions.md")
+    parser.add_argument(
+        "--tag-stats", action="store_true",
+        help="compute failure-mode tag rates across ALL hurt/helped/neutral cases, not just the "
+             "worst N. Needed to tell whether a tag actually predicts harm or is just how Qwen "
+             "writes generally -- a tag equally common in helped cases explains nothing.",
+    )
     args = parser.parse_args()
 
     print(f"loading {args.radgraph_jsonl} ...")
@@ -270,6 +276,50 @@ def main():
         f"\n{len(candidates)} cases with a real (non-no-op) revision: "
         f"{n_hurt} hurt RadGraph-F1, {n_helped} helped, {n_flat} unchanged"
     )
+
+    if args.tag_stats:
+        print("\ncomputing tag rates across all populations ...")
+        pops = {
+            "hurt": [c for c in candidates if c[0] > 0],
+            "helped": [c for c in candidates if c[0] < 0],
+            "neutral": [c for c in candidates if c[0] == 0],
+        }
+        pop_tags = {}
+        pop_lenratio = {}
+        for name, pop in pops.items():
+            counts = Counter()
+            n_cases_with_tag = Counter()
+            ratios = []
+            for _, _, fr in pop:
+                case_tags = set()
+                for _, d_sent, r_sent, _ in sentence_pairs(fr["draft_text"], fr["revised_text"]):
+                    for t in tag_failure_modes(d_sent, r_sent):
+                        base = t.split(":")[0]
+                        counts[base] += 1
+                        case_tags.add(base)
+                    dw, rw = len(d_sent.split()), len(r_sent.split())
+                    if dw:
+                        ratios.append(rw / dw)
+                for t in case_tags:
+                    n_cases_with_tag[t] += 1
+            pop_tags[name] = (n_cases_with_tag, len(pop))
+            pop_lenratio[name] = sum(ratios) / len(ratios) if ratios else float("nan")
+
+        all_tags = sorted({t for c, _ in pop_tags.values() for t in c})
+        print("\n=== tag prevalence: share of cases in each population showing the tag ===")
+        header = f"{'tag':28s} " + "".join(f"{k+' (n='+str(pop_tags[k][1])+')':>20s}" for k in pops)
+        print(header)
+        for t in all_tags:
+            row = f"{t:28s} "
+            for k in pops:
+                counts, n = pop_tags[k]
+                row += f"{(counts[t]/n if n else 0):>19.1%} "
+            print(row)
+        print(f"\n{'mean revised/draft word ratio':28s} " + "".join(f"{pop_lenratio[k]:>19.3f} " for k in pops))
+        print(
+            "\nRead this as: a tag only explains the regression if its rate is materially HIGHER "
+            "in 'hurt' than in 'helped'. Equal rates mean it is just how Qwen writes."
+        )
 
     # Aggregate failure-mode tally across the worst N -- the actual deliverable
     # for characterising what's going wrong.
