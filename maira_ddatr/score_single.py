@@ -141,9 +141,21 @@ def main():
     ap.add_argument("--baseline", default="", help="optional 2nd model JSON to compare against")
     ap.add_argument("--refs", default="", help="CSV/JSON of study_id->reference (only if --flat preds)")
     ap.add_argument("--bootstrap", type=int, default=1000)
-    ap.add_argument("--out-json", default="results_single.json")
+    ap.add_argument("--out-json", default="",
+                    help="default: auto-named from the input files, so successive "
+                         "comparisons don't overwrite each other")
     args = ap.parse_args()
     B = args.bootstrap
+
+    # auto-name the output from the inputs (results_<preds>_vs_<baseline>.json)
+    if not args.out_json:
+        import os as _os
+        _p = _os.path.splitext(_os.path.basename(args.preds))[0]
+        if args.baseline:
+            _b = _os.path.splitext(_os.path.basename(args.baseline))[0]
+            args.out_json = f"results_{_p}_vs_{_b}.json"
+        else:
+            args.out_json = f"results_{_p}.json"
 
     preds = _load_records(args.preds)
 
