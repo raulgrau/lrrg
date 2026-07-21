@@ -1,3 +1,5 @@
 train_pairs_ulcx.jsonl
 .git.corrupt.bak/
 .git.broken2.bak/
+maira_ddatr/ckpt.pt
+maira_ddatr/runs/m1_strip/ckpt.pt
