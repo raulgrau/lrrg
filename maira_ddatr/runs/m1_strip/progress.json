@@ -1,0 +1,9 @@
+{
+  "step": 4500,
+  "meta": {
+    "injection": "M1",
+    "prior_image_mode": "strip_to_encoder_only",
+    "epoch": 0
+  },
+  "time": 1784408331.929023
+}
