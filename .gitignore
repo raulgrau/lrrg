@@ -3,3 +3,10 @@ train_pairs_ulcx.jsonl
 .git.broken2.bak/
 maira_ddatr/ckpt.pt
 maira_ddatr/runs/m1_strip/ckpt.pt
+
+# presentation materials (slides, scripts, LaTeX build artifacts)
+presentations/
+
+# python build artifacts
+__pycache__/
+*.pyc
