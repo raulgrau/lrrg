@@ -255,18 +255,19 @@ def infer(
 def baseline(
     eval_manifest_text: str,
     out_name: str = "preds_baseline.json",
+    out_subdir: str = "m1_strip_to_encoder_only",
     max_new_tokens: int = 256,
+    limit: int = 0,
 ):
     import subprocess
 
     os.environ.setdefault("HF_HOME", os.path.join(DATA_MOUNT, "hf"))
 
-    manifest_path = "/root/eval_modal.jsonl"
+    manifest_path = f"/root/eval_{out_name}.jsonl"   # unique per arm (parallel-safe)
     with open(manifest_path, "w") as f:
         f.write(eval_manifest_text)
 
-    # write alongside the DDaTR preds so both sit together for scoring
-    out_dir = os.path.join(RUNS_MOUNT, "m1_strip_to_encoder_only")
+    out_dir = os.path.join(RUNS_MOUNT, out_subdir)
     os.makedirs(out_dir, exist_ok=True)
     out_json = os.path.join(out_dir, out_name)
 
@@ -276,6 +277,8 @@ def baseline(
         "--out_json", out_json,
         "--max_new_tokens", str(max_new_tokens),
     ]
+    if limit:
+        cmd += ["--limit", str(limit)]
     print("[baseline] running:", " ".join(cmd), flush=True)
     subprocess.run(cmd, cwd="/root/maira_ddatr", check=True)
     runs_vol.commit()
@@ -344,3 +347,45 @@ def run_baseline(manifest: str = "../test_pairs_ulcx.jsonl"):
         raw = f.read()
     rewritten = rewrite.remote(raw)          # repoint image paths at /data
     baseline.remote(rewritten)
+
+
+@app.local_entrypoint()
+def run_battery(manifest_dir: str = "../battery_manifests", smoke: bool = False):
+    """Counterfactual-prior battery: base MAIRA-2 inference on every arm.
+
+    Smoke first (5 cases/arm -- verifies A2's blank-report path and that all
+    substituted images resolve on the Volume, before spending real credits):
+        modal run modal_app.py::run_battery --smoke
+
+    Then the full fan-out (all 8 arms, in PARALLEL containers, ~1-1.5h each):
+        modal run modal_app.py::run_battery
+
+    Writes preds_A0.json ... preds_A7.json to /runs/battery on the lrrg-runs Volume.
+    """
+    import glob
+    import os as _os
+
+    arms = sorted(glob.glob(_os.path.join(manifest_dir, "A*.jsonl")))
+    if not arms:
+        raise SystemExit(f"no arm manifests in {manifest_dir} "
+                         f"(run make_battery_manifests.py first)")
+    limit = 5 if smoke else 0
+    print(f"[battery] {len(arms)} arms, {'SMOKE (5/arm)' if smoke else 'full'}")
+
+    calls = []
+    for arm_path in arms:
+        arm = _os.path.splitext(_os.path.basename(arm_path))[0]     # e.g. A3_wrong_patient
+        with open(arm_path) as f:
+            rewritten = rewrite.remote(f.read())   # repoint image paths at /data
+        # spawn -> all arms run in parallel on separate containers
+        calls.append((arm, baseline.spawn(
+            rewritten, out_name=f"preds_{arm}.json",
+            out_subdir="battery_smoke" if smoke else "battery", limit=limit)))
+
+    print(f"[battery] launched {len(calls)} arms; waiting ...")
+    for arm, c in calls:
+        c.get()
+        print(f"  [done] {arm}")
+    print("[battery] all arms complete -> /runs/"
+          f"{'battery_smoke' if smoke else 'battery'}  "
+          "(pull: modal volume get lrrg-runs battery .)")

@@ -51,6 +51,8 @@ def main():
     ap.add_argument("--model_id", default="microsoft/maira-2")
     ap.add_argument("--max_new_tokens", type=int, default=256)
     ap.add_argument("--save_every", type=int, default=50)
+    ap.add_argument("--limit", type=int, default=0,
+                    help="cap cases (0 = all) -- use a small value for a smoke test")
     args = ap.parse_args()
 
     import torch
@@ -71,8 +73,9 @@ def main():
     records = _load_done(args.out_json)
     print(f"[baseline] {len(ds)} studies | {len(records)} already done -> resuming", flush=True)
 
+    N = min(args.limit, len(ds)) if args.limit else len(ds)
     done_since = 0
-    for i in range(len(ds)):
+    for i in range(N):
         item = ds[i]
         sid = str(item["study_id"])
         if sid in records:
