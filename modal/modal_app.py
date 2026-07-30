@@ -65,6 +65,9 @@ image = (
     # CPU-only 2.11.0 off PyPI instead.
     .pip_install(TORCH, index_url=TORCH_INDEX)
     .pip_install(*PY_DEPS)
+    # green_score pulls the GREEN 7B metric; kept in its own layer so a version
+    # clash here can't disturb the training stack above.
+    .pip_install("green_score")
     # ship the existing, tested training code (one dir up from this file)
     .add_local_dir(
         os.path.join(os.path.dirname(__file__), "..", "maira_ddatr"),
@@ -287,6 +290,46 @@ def baseline(
 
 
 # --------------------------------------------------------------------------- #
+#  5. GREEN scoring  (7B generative metric -- GPU-bound, the last credits-buy)
+# --------------------------------------------------------------------------- #
+@app.function(
+    gpu="A100-80GB",              # GREEN is 7B + generates per pair; A100 keeps it moving
+    volumes={DATA_MOUNT: data_vol, RUNS_MOUNT: runs_vol},
+    secrets=[hf_secret],
+    timeout=12 * 60 * 60,         # slow; resumable per-chunk, so safe
+    cpu=8.0,
+)
+def green(pred_rel_paths: list[str], smoke: bool = False):
+    """Score each predictions JSON with GREEN, in ONE container (model loaded once).
+
+    pred_rel_paths: paths relative to the lrrg-runs Volume, e.g.
+        ["battery/preds_A1_full.json", "m1_strip_to_encoder_only/preds_test.json"]
+    Writes green_<name>.json next to each. Sequential on purpose -- one 7B load,
+    reused across all files; resumable per chunk so a restart continues.
+    """
+    import subprocess
+
+    os.environ.setdefault("HF_HOME", os.path.join(DATA_MOUNT, "hf"))
+    out_dir = os.path.join(RUNS_MOUNT, "green")
+    os.makedirs(out_dir, exist_ok=True)
+
+    for rel in pred_rel_paths:
+        src = os.path.join(RUNS_MOUNT, rel)
+        if not os.path.exists(src):
+            print(f"[green] SKIP missing {src}", flush=True)
+            continue
+        name = os.path.splitext(os.path.basename(rel))[0]
+        out_json = os.path.join(out_dir, f"green_{name}.json")
+        cmd = ["python", "green_score.py", "--preds", src, "--out_json", out_json]
+        if smoke:
+            cmd += ["--limit", "5"]
+        print(f"[green] scoring {rel}", flush=True)
+        subprocess.run(cmd, cwd="/root/maira_ddatr", check=True)
+        runs_vol.commit()
+    print(f"[green] done -> /runs/green  (pull: modal volume get lrrg-runs green .)")
+
+
+# --------------------------------------------------------------------------- #
 #  Local orchestration
 # --------------------------------------------------------------------------- #
 @app.local_entrypoint()
@@ -389,3 +432,37 @@ def run_battery(manifest_dir: str = "../battery_manifests", smoke: bool = False)
     print("[battery] all arms complete -> /runs/"
           f"{'battery_smoke' if smoke else 'battery'}  "
           "(pull: modal volume get lrrg-runs battery .)")
+
+
+# Default GREEN targets: the prediction sets the report's tables actually need --
+# battery headline arms + the three DDaTR arms. Extend if credits allow.
+GREEN_DEFAULT = [
+    "battery/preds_A0_no_prior.json",
+    "battery/preds_A1_full.json",
+    "battery/preds_A2_image_only.json",
+    "battery/preds_A3_wrong_patient.json",
+    "battery/preds_A4_img_ok_rep_wrong.json",
+    "battery/preds_A5_img_wrong_rep_ok.json",
+    "battery/preds_A6_dup_current.json",
+    "m1_strip_to_encoder_only/preds_test.json",       # DDaTR M1
+    "M2_strip_to_encoder_only/preds_m2.json",         # DDaTR M2
+    "none_keep_as_tokens/preds_ftbaseline.json",      # fine-tuned baseline
+]
+
+
+@app.local_entrypoint()
+def run_green(smoke: bool = False, files: str = ""):
+    """GREEN-score prediction sets already on the Volume (one A100 container).
+
+    Smoke first (5 cases/file -- verifies the GREEN package + model load cheaply):
+        modal run modal_app.py::run_green --smoke
+
+    Then the real pass (resumable, ~hours):
+        modal run --detach modal_app.py::run_green
+
+    --files "a.json,b.json" overrides the default target list (paths relative to
+    the lrrg-runs Volume).
+    """
+    targets = [f.strip() for f in files.split(",") if f.strip()] or GREEN_DEFAULT
+    print(f"[green] {len(targets)} prediction sets{' (SMOKE)' if smoke else ''}")
+    green.remote(targets, smoke=smoke)
