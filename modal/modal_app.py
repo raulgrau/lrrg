@@ -65,10 +65,10 @@ image = (
     # CPU-only 2.11.0 off PyPI instead.
     .pip_install(TORCH, index_url=TORCH_INDEX)
     .pip_install(*PY_DEPS)
-    # green_score (GREEN 7B metric) hard-pins python==3.12.1 in its wheel metadata,
-    # but it's a pure transformers wrapper and runs fine on 3.11 -- force past the
-    # version gate. Own layer so a dep clash can't disturb the training stack above.
-    .run_commands("python -m pip install --ignore-requires-python green_score")
+    # NOTE: GREEN (green_score) is intentionally NOT installed here -- it transitively
+    # requires a scipy that only builds on Python 3.12+, incompatible with this 3.11
+    # image. Running GREEN needs a separate 3.12 image (deferred to August on the 3090).
+    # The green()/run_green entrypoints below stay for that future image.
     # ship the existing, tested training code (one dir up from this file)
     .add_local_dir(
         os.path.join(os.path.dirname(__file__), "..", "maira_ddatr"),
