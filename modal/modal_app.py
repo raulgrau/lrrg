@@ -210,12 +210,13 @@ def infer(
     out_name: str = "preds_test.json",
     max_new_tokens: int = 256,
     num_workers: int = 6,
+    limit: int = 0,
 ):
     import subprocess
 
     os.environ.setdefault("HF_HOME", os.path.join(DATA_MOUNT, "hf"))
 
-    manifest_path = "/root/eval_modal.jsonl"
+    manifest_path = f"/root/eval_{out_name}.jsonl"   # unique per arm (parallel-safe)
     with open(manifest_path, "w") as f:
         f.write(eval_manifest_text)
 
@@ -239,6 +240,8 @@ def infer(
         "--max_new_tokens", str(max_new_tokens),
         "--num_workers", str(num_workers),
     ]
+    if limit:
+        cmd += ["--limit", str(limit)]
     print("[infer] running:", " ".join(cmd), flush=True)
     subprocess.run(cmd, cwd="/root/maira_ddatr", check=True)
     runs_vol.commit()
@@ -433,6 +436,49 @@ def run_battery(manifest_dir: str = "../battery_manifests", smoke: bool = False)
     print("[battery] all arms complete -> /runs/"
           f"{'battery_smoke' if smoke else 'battery'}  "
           "(pull: modal volume get lrrg-runs battery .)")
+
+
+@app.local_entrypoint()
+def run_battery_ckpt(injection: str = "none",
+                     prior_image_mode: str = "keep_as_tokens",
+                     manifest_dir: str = "../battery_manifests", smoke: bool = False):
+    """Run the SAME counterfactual battery on a TRAINED checkpoint (not base MAIRA-2),
+    turning the audit into a multi-model comparison: does fine-tuning / encoder fusion
+    change HOW the model uses the prior?
+
+    Fine-tuned no-DDaTR baseline (native late fusion):
+        modal run --detach modal_app.py::run_battery_ckpt --injection none --prior-image-mode keep_as_tokens
+    DDaTR M2 (multi-scale, strip):
+        modal run --detach modal_app.py::run_battery_ckpt --injection M2 --prior-image-mode strip_to_encoder_only
+
+    Writes preds_A*_<arm>.json into the checkpoint's run dir (e.g. none_keep_as_tokens/).
+    Smoke first with --smoke (5 cases/arm).
+    """
+    import glob
+    import os as _os
+
+    arms = sorted(glob.glob(_os.path.join(manifest_dir, "A*.jsonl")))
+    if not arms:
+        raise SystemExit(f"no arm manifests in {manifest_dir}")
+    limit = 5 if smoke else 0
+    tag = str(injection).replace(",", "-")
+    print(f"[battery-ckpt] {len(arms)} arms on {tag}_{prior_image_mode}"
+          f"{' (SMOKE)' if smoke else ''}")
+
+    calls = []
+    for arm_path in arms:
+        arm = _os.path.splitext(_os.path.basename(arm_path))[0]
+        with open(arm_path) as f:
+            rewritten = rewrite.remote(f.read())
+        calls.append((arm, infer.spawn(
+            rewritten, injection=injection, prior_image_mode=prior_image_mode,
+            out_name=f"battery_{arm}.json", limit=limit)))
+
+    print(f"[battery-ckpt] launched {len(calls)} arms; waiting ...")
+    for arm, c in calls:
+        c.get()
+        print(f"  [done] {arm}")
+    print(f"[battery-ckpt] complete -> /runs/{tag}_{prior_image_mode}/battery_A*.json")
 
 
 # Default GREEN targets: the prediction sets the report's tables actually need --

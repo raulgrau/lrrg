@@ -69,6 +69,8 @@ def main():
     ap.add_argument("--num_workers", type=int, default=4,
                     help="DataLoader workers (spawn context; safe after CUDA init). "
                          "0 = serial. Use 6-8 when images are on a slow/network FS.")
+    ap.add_argument("--limit", type=int, default=0,
+                    help="cap cases (0 = all); small value for a smoke test")
     ap.add_argument("--dummy_prior", default="none",
                     choices=["none", "drop", "shuffle"],
                     help="prior-corruption ablation to test causal use of the prior: "
@@ -159,6 +161,8 @@ def main():
     # the collator drops study_id/change_label into the sample; keep manifest refs too
     done_since = 0
     for i, sample in enumerate(loader):
+        if args.limit and i >= args.limit:
+            break
         sid = sample["study_id"]
         if sid in records:
             continue
